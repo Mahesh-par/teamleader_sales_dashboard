@@ -506,6 +506,9 @@ select.f {
 .stats.grid-5 {
   grid-template-columns: repeat(5, 1fr);
 }
+.stats.grid-6 {
+  grid-template-columns: repeat(6, 1fr);
+}
 .stat {
   padding: 34px 30px 30px;
   border-left: 1px solid var(--rule);

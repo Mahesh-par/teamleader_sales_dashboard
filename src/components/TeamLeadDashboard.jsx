@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { API_BASE_URL } from '../config';
 
-const editableRowFields = ['client', 'remarks', 'type', 'budget', 'quoted', 'interviews', 'status', 'note'];
-const emptyDirectDraft = { client: '', remarks: '', type: 'Fixed', budget: '', quoted: '', interviews: '', status: 'Open', note: '' };
+const editableRowFields = ['client', 'remarks', 'type', 'budget', 'quoted', 'interviews', 'status', 'note', 'createdAt'];
+const emptyDirectDraft = { client: '', remarks: '', type: 'Fixed', budget: '', quoted: '', interviews: '', status: 'Open', note: '', createdAt: '' };
 
 const decimalOnly = (value) => {
   const cleaned = String(value).replace(/[^\d.]/g, '');
@@ -41,6 +41,9 @@ function TeamLeadDashboard({ user, onLogout }) {
   const [savingNewRow, setSavingNewRow] = useState(false);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [spentDraft, setSpentDraft] = useState('');
+  const [isEditingSpent, setIsEditingSpent] = useState(false);
+  const [savingSpent, setSavingSpent] = useState(false);
 
   useEffect(() => {
     fetchDashboard();
@@ -63,6 +66,7 @@ function TeamLeadDashboard({ user, onLogout }) {
         setData(json);
         setStartDate(current => current || firstDayOfCurrentMonthKey());
         setEndDate(current => current || todayDateKey());
+        setSpentDraft(json.team?.spent || 0);
       } else {
         setError(json.error);
       }
@@ -70,6 +74,34 @@ function TeamLeadDashboard({ user, onLogout }) {
       setError('Failed to fetch data');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveSpent = async () => {
+    if (!data?.team?.id) return;
+    try {
+      setSavingSpent(true);
+      const token = localStorage.getItem('token');
+      const res = await fetch(`${API_BASE_URL}/api/teams/${data.team.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ spent: spentDraft })
+      });
+
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || 'Failed to save spent amount');
+      }
+
+      setIsEditingSpent(false);
+      fetchDashboard();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingSpent(false);
     }
   };
 
@@ -157,7 +189,7 @@ function TeamLeadDashboard({ user, onLogout }) {
   };
 
   const startAddRow = (bidderId) => {
-    setNewRowDraft(emptyDirectDraft);
+    setNewRowDraft({ ...emptyDirectDraft, createdAt: todayDateKey() });
     setAddingRowBidderId(bidderId);
   };
 
@@ -283,7 +315,8 @@ function TeamLeadDashboard({ user, onLogout }) {
     return `${year}-${month}-${day}`;
   };
   const isRowInDateRange = (row) => {
-    const key = rowDateKey(row.createdAt);
+    const dateToUse = (row.status === 'Converted' && row.convertedOn) ? row.convertedOn : row.createdAt;
+    const key = rowDateKey(dateToUse);
     if (!key) return false;
     if (startDate && key < startDate) return false;
     if (endDate && key > endDate) return false;
@@ -291,11 +324,12 @@ function TeamLeadDashboard({ user, onLogout }) {
   };
   const summarizeRows = (rows, bids = 0) => {
     const validRows = rows.filter(row => row.client?.trim());
+    const uniqueClients = new Set(validRows.map(row => row.client.trim().toLowerCase()));
     const openRows = validRows.filter(row => row.status === 'Open');
     const converted = validRows.filter(row => row.status === 'Converted').length;
 
     return {
-      clients: validRows.length,
+      clients: uniqueClients.size,
       fresh: validRows.filter(row => row.wk >= data.state.weekNo).length,
       hourly: openRows.filter(row => row.type === 'Hourly').length,
       pipeline: openRows.reduce((sum, row) => sum + rowWorth(row), 0),
@@ -343,7 +377,7 @@ function TeamLeadDashboard({ user, onLogout }) {
     <div className={`bidder${isDirectBidder(bidder) ? ' direct' : ''}`} key={bidder.id}>
       <div className="b-head">
         <div className="b-id">
-          <div className="b-name">{bidder.name}</div>
+          <div className="b-name">{isDirectBidder(bidder) ? "Direct and repeat clients" : bidder.name}</div>
         </div>
         <div className="b-figs">
           <div className="b-fig"><div className="bf-lab">Bids</div><div className="bf-val">{bidder.stats.bids}</div></div>
@@ -352,33 +386,107 @@ function TeamLeadDashboard({ user, onLogout }) {
           <div className="b-fig"><div className="bf-lab">Won</div><div className="bf-val" style={{ color: 'var(--s-won-d)' }}><span className="cur">$</span>{bidder.stats.revenue.toLocaleString()}</div></div>
         </div>
       </div>
+      <div style={{ marginBottom: "1rem", display: "flex", justifyContent: "flex-end" }}>
+        {!isAdding && <button className="btn mini add-row" style={{ marginTop: 0 }} onClick={() => startAddRow(bidder.id)}>+ Add a client</button>}
+      </div>
       <div className="wrapscroll">
         <table>
           <thead>
             <tr>
               <th style={{ width: '12%' }}>Date</th>
-              <th style={{ width: '14%' }}>Client</th>
-              <th style={{ width: '18%' }}>Remarks</th>
-              <th className="c" style={{ width: '11%' }}>Type</th>
-              <th className="r" style={{ width: '8%' }}>Budget</th>
-              <th className="r" style={{ width: '8%' }}>Quoted</th>
+              <th style={{ width: '13%' }}>Client</th>
+              <th style={{ width: '14%' }}>Remarks</th>
+              <th className="c" style={{ width: '10%' }}>Type</th>
+              <th className="r" style={{ width: '6%' }}>Hrs</th>
+              <th className="r" style={{ width: '6%' }}>Amt/Hr</th>
+              <th className="r" style={{ width: '7%' }}>Budget</th>
+              <th className="r" style={{ width: '7%' }}>Quoted</th>
               <th className="c" style={{ width: '6%' }}>Int.</th>
-              <th className="c" style={{ width: '13%' }}>Status</th>
-              <th style={{ width: '7%' }}>TL note</th>
+              <th className="c" style={{ width: '10%' }}>Status</th>
+              <th style={{ width: '6%' }}>TL note</th>
               <th className="c" style={{ width: '3%' }}>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {bidder.rows.map(r => {
+              {isAdding && (
+              <tr className="draft-row fresh">
+                <td>
+                  <input type="date" className="f" value={newRowDraft.createdAt || ''} onChange={e => changeNewRowDraft('createdAt', e.target.value)} />
+                </td>
+                <td>
+                  <input className="f" placeholder="Client name *" list="client-suggestions" value={newRowDraft.client} onChange={e => changeNewRowDraft('client', e.target.value)} />
+                </td>
+                <td>
+                  <input className="f" placeholder="Remarks" value={newRowDraft.remarks} onChange={e => changeNewRowDraft('remarks', e.target.value)} />
+                </td>
+                <td className="c">
+                  <select className="f slim" value={newRowDraft.type} onChange={e => changeNewRowDraft('type', e.target.value)}>
+                    <option>Fixed</option>
+                    <option>Hourly</option>
+                    <option>Hourly bid, fixed quote</option>
+                  </select>
+                </td>
+                <td className="r">
+                  {newRowDraft.type === 'Fixed' ? <span className="muted-inline">-</span> : (
+                    <input className="f num" inputMode="decimal" placeholder="Hrs" value={newRowDraft.workedHours || ''} onChange={e => changeNewRowDraft('workedHours', decimalOnly(e.target.value))} />
+                  )}
+                </td>
+                <td className="r">
+                  {newRowDraft.type === 'Fixed' ? <span className="muted-inline">-</span> : (
+                    <input className="f num" inputMode="decimal" placeholder="Amt/Hr" value={newRowDraft.amtPerHour || ''} onChange={e => changeNewRowDraft('amtPerHour', decimalOnly(e.target.value))} />
+                  )}
+                </td>
+                <td className="r">
+                  <input className="f num" inputMode="decimal" placeholder="Budget" value={newRowDraft.budget} onChange={e => changeNewRowDraft('budget', decimalOnly(e.target.value))} />
+                </td>
+                <td className="r">
+                  {newRowDraft.type === 'Fixed' ? (
+                    <input className="f num" inputMode="decimal" placeholder="Quoted" value={newRowDraft.quoted} onChange={e => changeNewRowDraft('quoted', decimalOnly(e.target.value))} />
+                  ) : (
+                    <span className="muted-inline">{newRowDraft.quoted || "-"}</span>
+                  )}
+                </td>
+                <td className="c">
+                  <input className="f cen" inputMode="numeric" placeholder="Int." value={newRowDraft.interviews} onChange={e => changeNewRowDraft('interviews', integerOnly(e.target.value))} />
+                </td>
+                <td className="c statcell">
+                  <select className={`f st-${statusClass(newRowDraft.status)}`} value={newRowDraft.status} onChange={e => changeNewRowDraft('status', e.target.value)}>
+                    <option>Open</option>
+                    <option>Converted</option>
+                    <option>Hired elsewhere</option>
+                    <option>Job post deleted</option>
+                    <option>Client ended conversation</option>
+                  </select>
+                </td>
+                <td>
+                  <input className="f" placeholder="TL note" value={newRowDraft.note} onChange={e => changeNewRowDraft('note', e.target.value)} />
+                </td>
+                <td className="c row-actions">
+                  <div className="action-pair">
+                    <button className="icon-btn save" type="button" title="Save client" aria-label="Save client" onClick={() => saveNewRow(bidder.id)} disabled={savingNewRow || !newRowDraft.client.trim()}>
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4 4L19 6.5" /></svg>
+                    </button>
+                    <button className="icon-btn cancel" type="button" title="Cancel add" aria-label="Cancel add" onClick={cancelAddRow} disabled={savingNewRow}>
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" /></svg>
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            )}
+              {bidder.rows.map(r => {
               const isEditing = editingRowId === r.id;
               const row = isEditing ? editDraft : r;
 
               return (
                 <tr key={r.id}>
-                  <td>{formatInsertedDate(r.createdAt)}</td>
                   <td>
                     {isEditing ? (
-                      <input className="f" value={row.client || ''} onChange={e => changeEditDraft('client', e.target.value)} />
+                      <input type="date" className="f" value={row.createdAt ? rowDateKey(row.createdAt) : ''} onChange={e => changeEditDraft('createdAt', e.target.value)} />
+                    ) : formatInsertedDate(r.createdAt)}
+                  </td>
+                  <td>
+                    {isEditing ? (
+                      <input className="f" list="client-suggestions" value={row.client || ''} onChange={e => changeEditDraft('client', e.target.value)} />
                     ) : renderText(r.client)}
                   </td>
                   <td>
@@ -397,12 +505,38 @@ function TeamLeadDashboard({ user, onLogout }) {
                   </td>
                   <td className="r">
                     {isEditing ? (
+                      row.type === "Fixed" ? (
+                        <span className="muted-inline">-</span>
+                      ) : (
+                        <input className="f num" inputMode="decimal" value={row.workedHours || ''} onChange={e => changeEditDraft('workedHours', decimalOnly(e.target.value))} />
+                      )
+                    ) : (
+                      r.type === "Fixed" ? <span className="muted-inline">-</span> : renderText(r.workedHours)
+                    )}
+                  </td>
+                  <td className="r">
+                    {isEditing ? (
+                      row.type === "Fixed" ? (
+                        <span className="muted-inline">-</span>
+                      ) : (
+                        <input className="f num" inputMode="decimal" value={row.amtPerHour || ''} onChange={e => changeEditDraft('amtPerHour', decimalOnly(e.target.value))} />
+                      )
+                    ) : (
+                      r.type === "Fixed" ? <span className="muted-inline">-</span> : renderText(r.amtPerHour)
+                    )}
+                  </td>
+                  <td className="r">
+                    {isEditing ? (
                       <input className="f num" inputMode="decimal" value={row.budget || ''} onChange={e => changeEditDraft('budget', decimalOnly(e.target.value))} />
                     ) : renderText(r.budget)}
                   </td>
                   <td className="r">
                     {isEditing ? (
-                      <input className="f num" inputMode="decimal" value={row.quoted || ''} onChange={e => changeEditDraft('quoted', decimalOnly(e.target.value))} />
+                      row.type === "Fixed" ? (
+                        <input className="f num" inputMode="decimal" value={row.quoted || ''} onChange={e => changeEditDraft('quoted', decimalOnly(e.target.value))} />
+                      ) : (
+                        <span className="muted-inline">{row.quoted || "-"}</span>
+                      )
                     ) : renderText(r.quoted)}
                   </td>
                   <td className="c">
@@ -452,65 +586,25 @@ function TeamLeadDashboard({ user, onLogout }) {
                 </tr>
               );
             })}
-            {isAdding && (
-              <tr className="draft-row fresh">
-                <td className="muted-inline">New</td>
-                <td>
-                  <input className="f" placeholder="Client name *" value={newRowDraft.client} onChange={e => changeNewRowDraft('client', e.target.value)} />
-                </td>
-                <td>
-                  <input className="f" placeholder="Remarks" value={newRowDraft.remarks} onChange={e => changeNewRowDraft('remarks', e.target.value)} />
-                </td>
-                <td className="c">
-                  <select className="f slim" value={newRowDraft.type} onChange={e => changeNewRowDraft('type', e.target.value)}>
-                    <option>Fixed</option>
-                    <option>Hourly</option>
-                    <option>Hourly bid, fixed quote</option>
-                  </select>
-                </td>
-                <td className="r">
-                  <input className="f num" inputMode="decimal" placeholder="Budget" value={newRowDraft.budget} onChange={e => changeNewRowDraft('budget', decimalOnly(e.target.value))} />
-                </td>
-                <td className="r">
-                  <input className="f num" inputMode="decimal" placeholder="Quoted" value={newRowDraft.quoted} onChange={e => changeNewRowDraft('quoted', decimalOnly(e.target.value))} />
-                </td>
-                <td className="c">
-                  <input className="f cen" inputMode="numeric" placeholder="Int." value={newRowDraft.interviews} onChange={e => changeNewRowDraft('interviews', integerOnly(e.target.value))} />
-                </td>
-                <td className="c statcell">
-                  <select className={`f st-${statusClass(newRowDraft.status)}`} value={newRowDraft.status} onChange={e => changeNewRowDraft('status', e.target.value)}>
-                    <option>Open</option>
-                    <option>Converted</option>
-                    <option>Hired elsewhere</option>
-                    <option>Job post deleted</option>
-                    <option>Client ended conversation</option>
-                  </select>
-                </td>
-                <td>
-                  <input className="f" placeholder="TL note" value={newRowDraft.note} onChange={e => changeNewRowDraft('note', e.target.value)} />
-                </td>
-                <td className="c row-actions">
-                  <div className="action-pair">
-                    <button className="icon-btn save" type="button" title="Save client" aria-label="Save client" onClick={() => saveNewRow(bidder.id)} disabled={savingNewRow || !newRowDraft.client.trim()}>
-                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4 4L19 6.5" /></svg>
-                    </button>
-                    <button className="icon-btn cancel" type="button" title="Cancel add" aria-label="Cancel add" onClick={cancelAddRow} disabled={savingNewRow}>
-                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" /></svg>
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            )}
+            
           </tbody>
         </table>
       </div>
-      {!isAdding && <button className="btn mini add-row" onClick={() => startAddRow(bidder.id)}>+ Add a client</button>}
+      
     </div>
     );
   };
 
+  const allBiddersRows = data?.team?.bidders?.flatMap(b => b.rows || []) || [];
+  const uniqueClientNames = Array.from(new Set(allBiddersRows.map(r => r.client?.trim()).filter(Boolean))).sort();
+
   return (
     <div className="sheet">
+      <datalist id="client-suggestions">
+        {uniqueClientNames.map(name => (
+          <option key={name} value={name} />
+        ))}
+      </datalist>
       {deleteTarget && (
         <div className="modal-backdrop" role="presentation" onClick={closeDeletePrompt}>
           <div className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delete-title" onClick={e => e.stopPropagation()}>
@@ -563,7 +657,7 @@ function TeamLeadDashboard({ user, onLogout }) {
       <section>
         <div className="sec-head"><span className="sec-num">01</span><span className="sec-label">Team snapshot</span></div>
         <h2 className="sec-title">The team's week so far</h2>
-        <div className="stats grid-5">
+        <div className="stats grid-6">
           <div className="stat">
             <div className="s-lab">Bids</div>
             <div className="s-row"><div className="big">{statsForRange.bids}</div></div>
@@ -589,6 +683,35 @@ function TeamLeadDashboard({ user, onLogout }) {
             <div className="s-row"><span className="cur">$</span><div className="big">{statsForRange.revenue.toLocaleString()}</div></div>
             <div className="s-sub">Team total</div>
           </div>
+          <div className="stat" style={{ borderLeft: '1px solid var(--rule)', padding: '20px 30px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ borderBottom: '1px solid var(--rule)', paddingBottom: '40px' }}>
+              <div className="s-lab">Net Amount</div>
+              <div className="s-row" style={{ marginTop: 0 }}><span className="cur">$</span><div className="big" style={{ fontSize: '2.4rem', color: (statsForRange.revenue - (data.team.spent || 0)) >= 0 ? 'var(--s-won-d)' : 'var(--s-lost-d)' }}>{(statsForRange.revenue - (data.team.spent || 0)).toLocaleString()}</div></div>
+            </div>
+            <div style={{ marginTop: 'auto' }}>
+              <div className="s-lab" style={{ marginBottom: '4px' }}>Monthly Spent</div>
+              {isEditingSpent ? (
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="number"
+                    className="f num"
+                    style={{ width: '100px' }}
+                    value={spentDraft}
+                    onChange={e => setSpentDraft(e.target.value)}
+                  />
+                  <button className="btn mini" onClick={saveSpent} disabled={savingSpent}>Save</button>
+                  <button className="btn mini ghost" onClick={() => { setIsEditingSpent(false); setSpentDraft(data.team.spent || 0); }} disabled={savingSpent}>Cancel</button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <div className="s-row" style={{ marginTop: 0 }}><span className="cur">$</span><div className="big" style={{ fontSize: '1.5rem' }}>{(data.team.spent || 0).toLocaleString()}</div></div>
+                  <button className="icon-btn" onClick={() => setIsEditingSpent(true)}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true" width="16" height="16"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3zM13.5 8.5l2 2" /></svg>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </section>
 
@@ -601,13 +724,14 @@ function TeamLeadDashboard({ user, onLogout }) {
             <table>
               <thead>
                 <tr>
-                  <th style={{ width: '12%' }}>Date</th>
-                  <th style={{ width: '18%' }}>Client</th>
-                  <th style={{ width: '12%' }}>Bidder</th>
-                  <th style={{ width: '26%' }}>Remarks</th>
-                  <th className="r" style={{ width: '10%' }}>Worth</th>
-                  <th className="c" style={{ width: '8%' }}>Int.</th>
-                  <th className="c" style={{ width: '14%' }}>Status</th>
+                  <th style={{ width: '10%' }}>Date</th>
+                  <th style={{ width: '15%' }}>Client</th>
+                  <th style={{ width: '10%' }}>Bidder</th>
+                  <th style={{ width: '23%' }}>Remarks</th>
+                  <th className="r" style={{ width: '9%' }}>Worth</th>
+                  <th className="c" style={{ width: '6%' }}>Int.</th>
+                  <th className="c" style={{ width: '12%' }}>Status</th>
+                  <th style={{ width: '15%' }}>Converted On</th>
                 </tr>
               </thead>
               <tbody>
@@ -623,6 +747,7 @@ function TeamLeadDashboard({ user, onLogout }) {
                       <td className="r">${rowWorth(r).toLocaleString()}</td>
                       <td className="c">{renderText(r.interviews)}</td>
                       <td className="c"><span className="status-text st-won">{r.status}</span></td>
+                      <td>{formatInsertedDate(r.convertedOn)}</td>
                     </tr>
                   );
                 })}
@@ -644,11 +769,14 @@ function TeamLeadDashboard({ user, onLogout }) {
                   <th style={{ width: '11%' }}>Date</th>
                   <th style={{ width: '13%' }}>Client</th>
                   <th style={{ width: '9%' }}>Bidder</th>
-                  <th className="r" style={{ width: '9%' }}>Worth</th>
-                  <th className="c" style={{ width: '7%' }}>Int.</th>
-                  <th className="c" style={{ width: '11%' }}>Status</th>
-                  <th style={{ width: '32%' }}>Your instruction to bidder</th>
-                  <th className="c" style={{ width: '8%' }}>Actions</th>
+                  <th className="c" style={{ width: '8%' }}>Type</th>
+                  <th className="r" style={{ width: '5%' }}>Hrs</th>
+                  <th className="r" style={{ width: '6%' }}>Amt/Hr</th>
+                  <th className="r" style={{ width: '8%' }}>Worth</th>
+                  <th className="c" style={{ width: '5%' }}>Int.</th>
+                  <th className="c" style={{ width: '9%' }}>Status</th>
+                  <th style={{ width: '22%' }}>Your instruction to bidder</th>
+                  <th className="c" style={{ width: '4%' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -662,13 +790,48 @@ function TeamLeadDashboard({ user, onLogout }) {
                       <td>{formatInsertedDate(r.createdAt)}</td>
                       <td>
                         {isEditing ? (
-                          <input className="f" value={row.client || ''} onChange={e => changeEditDraft('client', e.target.value)} />
+                          <input className="f" list="client-suggestions" value={row.client || ''} onChange={e => changeEditDraft('client', e.target.value)} />
                         ) : renderText(r.client)}
                       </td>
                       <td>{bidder?.name}</td>
+                      <td className="c">
+                        {isEditing ? (
+                          <select className="f slim" value={row.type || 'Fixed'} onChange={e => changeEditDraft('type', e.target.value)}>
+                            <option>Fixed</option>
+                            <option>Hourly</option>
+                            <option>Hourly bid, fixed quote</option>
+                          </select>
+                        ) : renderText(r.type)}
+                      </td>
                       <td className="r">
                         {isEditing ? (
-                          <input className="f num" inputMode="decimal" value={row.quoted || row.budget || ''} onChange={e => changeEditDraft('quoted', decimalOnly(e.target.value))} />
+                          row.type === "Fixed" ? (
+                            <span className="muted-inline">-</span>
+                          ) : (
+                            <input className="f num" inputMode="decimal" value={row.workedHours || ''} onChange={e => changeEditDraft('workedHours', decimalOnly(e.target.value))} />
+                          )
+                        ) : (
+                          r.type === "Fixed" ? <span className="muted-inline">-</span> : renderText(r.workedHours)
+                        )}
+                      </td>
+                      <td className="r">
+                        {isEditing ? (
+                          row.type === "Fixed" ? (
+                            <span className="muted-inline">-</span>
+                          ) : (
+                            <input className="f num" inputMode="decimal" value={row.amtPerHour || ''} onChange={e => changeEditDraft('amtPerHour', decimalOnly(e.target.value))} />
+                          )
+                        ) : (
+                          r.type === "Fixed" ? <span className="muted-inline">-</span> : renderText(r.amtPerHour)
+                        )}
+                      </td>
+                      <td className="r">
+                        {isEditing ? (
+                          row.type === "Fixed" ? (
+                            <input className="f num" inputMode="decimal" value={row.quoted || row.budget || ''} onChange={e => changeEditDraft('quoted', decimalOnly(e.target.value))} />
+                          ) : (
+                            <span className="muted-inline">{row.quoted || "-"}</span>
+                          )
                         ) : `$${rowWorth(r).toLocaleString()}`}
                       </td>
                       <td className="c">
